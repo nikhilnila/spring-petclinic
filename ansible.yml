@@ -2,7 +2,6 @@
 - name: copy jar file to tomcat.
   hosts: dev 
   gather_facts: false  
-  become: true
   tasks:
     - name: copy jar file to tomcat.
       copy:
