@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Creating two instances one in public subnet with jenkins and Ansible installation and one private with Docker
+  and Tomcat running on it.
+
+Parameters:
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 172.20.0.0/16
+
+  PublicSubnetCIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 172.20.10.0/24
+
+  PrivateSubnetCIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the first Availability Zone
+    Type: String
+    Default: 172.20.20.0/24 
+
+  EC2InstancePublicInstanceName:
+    Description: enter name for Public insatnce
+    Type: String
+    Default: JnekinsAndAnsibleServer
+  EC2InstancePrivateInstanceName:
+    Description: enter name for Private insatnce
+    Type: String
+    Default: DockerTomcatServer
+  Keyname1: 
+    Description: enter key name
+    Type: 'AWS::EC2::KeyPair::KeyName'
+  EnvironmentName:
+    Description: enter the environment name
+    Type: String
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Internet-Gateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PrivateSubnetCIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  NAT:
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      AllocationId:
+         Fn::GetAtt:
+         - EIP
+         - AllocationId
+      SubnetId: !Ref PublicSubnet
+        
+  EIP:
+    DependsOn: InternetGatewayAttachment
+    Type: AWS::EC2::EIP
+    Properties:
+        Domain: vpc
+  
+  Route:
+    Type: AWS::EC2::Route
+    Properties:
+        RouteTableId: !Ref PrivateRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId:
+          Ref: NAT
+
+
+
+
+
+  EC2InstancePublic:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      KeyName: !Ref Keyname1
+      ImageId: ami-077e31c4939f6a2f3
+      InstanceType: t2.large
+      SecurityGroupIds: 
+       - !Ref InstanceSecurityGroupPublic
+      SubnetId: !Ref PublicSubnet
+      UserData: 
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            sudo yum update -y
+            sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+            sudo rpm --import https://pkg.jenkins.io/redhat/jenkins.io.key
+            sudo yum install jenkins -y
+            sudo service jenkins start
+            sudo systemctl enable jenkins
+            sudo service jenkins stop
+            sudo service jenkins restart
+            sudo usermod -a -G wheel jenkins
+            sudo yum install java-1.8.0-openjdk-devel -y
+            sudo hostnamectl set-hostname control-node-JenkinsAnsible.example.com && bash
+            sudo amazon-linux-extras install ansible2
+            sudo yum install git -y
+            
+       
+      Tags:
+        - Key: Name
+          Value: !Ref EC2InstancePublicInstanceName
+
+
+
+  EC2InstancePrivate:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      KeyName: !Ref Keyname1
+      ImageId: ami-077e31c4939f6a2f3
+      InstanceType: t2.micro
+      SecurityGroupIds: 
+       - !Ref InstanceSecurityGroupPrivate
+      SubnetId: !Ref PrivateSubnet
+      UserData: 
+        Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo yum update -y 
+              sudo yum install java-1.8.0 -y
+              sudo hostnamectl set-hostname dockertomcat.example.com && bash
+              sudo amazon-linux-extras install docker -y
+              sudo service docker start
+              sudo service docker status
+              sudo systemctl enable docker
+              sudo usermod -a -G docker ec2-user
+              cd /opt/
+              sudo wget https://mirrors.estointernet.in/apache/tomcat/tomcat-9/v9.0.46/bin/apache-tomcat-9.0.46.tar.gz
+              sudo tar -zvxf apache-tomcat-9.0.46.tar.gz
+              sudo chmod +x /opt/apache-tomcat-9.0.46/bin/startup.sh
+              sudo chmod +x /opt/apache-tomcat-9.0.46/bin/shutdown.sh
+              sudo ln -s /opt/apache-tomcat-9.0.46/bin/startup.sh /usr/bin/tomcatup
+              sudo ln -s /opt/apache-tomcat-9.0.46/bin/shutdown.sh /usr/bin/tomcatdown
+              sudo tomcatup
+            
+      Tags:
+        - Key: Name
+          Value: !Ref EC2InstancePrivateInstanceName
+
+          
+  InstanceSecurityGroupPublic:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join [ "-", [ !Ref EnvironmentName, 'ec2-security-group-public' ] ]
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+         
+  InstanceSecurityGroupPrivate:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join [ "-", [ !Ref EnvironmentName, 'ec2-security-group-private' ] ]
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 172.20.0.0/16
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 172.20.0.0/16
+      VpcId: !Ref VPC
