@@ -1,0 +1,169 @@
+STATEMENT 1: Using any IaC (Terraform/ARM/CFT) create the same infra which is depicted above.
+In this you also need to use the userdata to install the Jenkins and Ansible/Chef/Puppet/etc.
+
+Step1: For project, create repository on Git.
+Step2: 'git clone' that repo. to local.
+Step3: WIth the help of CFT creating infrastructure with details as below:
+	    VPC: 172.20.0.0/16
+		PUBLIC Subnet: 172.20.10.0/16, one EC2 server with ansible and jenkins installed.
+		PRIVATE Subnet: 172.20.20.0/16, one EC2 server with tomcat/docker installed.
+		NAT gateway
+Step4: Check the CF(build/test/run).
+Step5: If it works fine then push it to git.
+
+NOTE:
+	CFT:	https://github.com/nikhilnila/spring-petclinic.git  (filename: Project_CF_EC2-VPC.yml)
+
+STATEMENT 2: From Jenkins create the artefact as Dockerfile/War/Jar file and store it local.
+STATEMENT 3: Now using the ansible/Puppet/Chef, deploy the same artefact to the box which is in the private subnet.
+
+Step1: Make sure you have putty and pageant installed in your system.
+	   As we have both private & public ec2 in running state, open pageant and add private ec2's key in it then connect
+	   to public ec2 with ssh, and at the time of adding the key, select tickbox of 'Allow agent forwarding'. This
+	   will read the private ec2's key added to pageant(in background).
+	   
+Step2: Go to '/opt' folder, then use wget command to download the maven tar file(this file would be available on official
+		maven site i.e. https://maven.apache.org/download.cgi)
+			
+			sudo wget *link*		: 	this will download the file
+			sudo tar -zvxf filename	: 	this will unzip that file
+			sudo mkdir maven		: 	this will create maven directory
+			sudo mv filename maven	: 	this will move file to maven directory
+			sudo chown -R ec2-user:ec2-user maven :this will give maven directory's owner permission to 'ec2-user'
+			sudo vi ~/.bashrc
+				export PATH=/opt/maven/filename/bin:$PATH
+					esc:wq
+			cd
+			source ~/.bashrc
+			mvn -version
+			
+Step3:	Go to https://publicip:8080	, it'll ask for password so in putty(in public ec2) go to '/var/lib/jenkins/secrets/initialAdminPassword', copy password
+		from it and paste it in browser and press 'continue' >> 'install suggested plugins' >> fill up all required
+		fields to 'Create First Admin User' >> Welcome to jenkins
+		
+		Then
+		
+		Manage Jenkins >> Manage Plugins >> Under 'available' tab, search for 'Maven Invoker' then 'Install without 
+		restart'
+		
+		Manage Jenkins >> Manage Plugins >> Under 'available' tab, search for 'Maven Integreter' then 'Install without 
+		restart'
+		
+		Manage Jenkins >> Manage Plugins >> Under 'available' tab, search for 'Ansible' then 'Install without 
+		restart'
+		
+		Then	
+			
+		Manage Jenkins >> Global Tool Configuration >> Under JDK Name: java ,JAVA_HOME: /usr/lib/jvm/java-1.8.0-openjdk
+		
+			Under Maven >> Name: maven (untick 'Install automatically') >> MAVEN_HOME: /opt/maven/filename
+			
+			Under Ansible >> Name: ansible 2.9.18(you'll get it with 'ansible --version') >> path to ansible executables directory: /usr/bin
+			(to get it use 'whereis ansible' command)
+			
+Step4:	Ansible (control node, managed node) setup
+		
+		We need to set password for ec2-user, on both public and private servers.
+			sudo passwd ec2-user
+			
+		On both ec2 servers set 'PasswordAuthentication yes' in sshd_config file.
+			
+			sudo vi /etc/ssh/sshd_config
+				PasswordAuthentication yes
+			esc:wq
+			sudo systemctl restart sshd
+			
+		Generate key on public instance
+			ssh-keygen
+			
+		Copy id-rsa file to private ec2
+			ssh-copy-id ec2-user@private-ec2-ip
+				(ssh-copy-id -f ec2-user@private-ec2-ip : -f ,to copy it forcefully)
+		
+		On both ec2 servers, In 'hosts' file make entry of both control node and managed node private ip and their respective names
+			sudo vi /etc/hosts
+				privateip  names
+			esc:wq
+				
+		Use following commands to provide permissions.
+			sudo chmod 700 ~/.ssh
+			sudo chmod 600 ~/.ssh/authorized_keys
+		
+		Try to ping to both servers from each other. You should be able to ping each other.
+		Create playbook (ansible.yml), inventory(dev.in), ansible.cfg files and upload it to git repository.
+
+		
+Step5:	On private instance:
+
+			cd /opt/apache-tomcat-9.0.46/conf		
+			sudo vi server.xml
+				Before
+				<Connector port="8080" protocol="HTTP/1.1"
+				connectionTimeout="20000"
+				redirectPort="8443" />
+				
+				After
+				<Connector port="8090" protocol="HTTP/1.1"
+				connectionTimeout="20000"
+				redirectPort="8443" />
+			
+			    esc:wq
+			
+			sudo vi tomcat-users.xml
+				<role rolename="manager-gui"/>
+				<role rolename="manager-script"/>
+				<user username="admin" password="admin" roles="manager-gui, manager-script"/>
+				<user username="deployer" password="deployer" roles="manager-script" />
+				
+				esc:wq
+				
+			Edit the RemoteAddrValve under this file /opt/apache-tomcat-9.0.35/webapps/manager/METAINF/context.xml
+			to allow all.	
+			
+			cd /opt/apache-tomcat-9.0.35/webapps/manager/METAINF
+			sudo vi context.xml
+				Before
+				<Valve className="org.apache.catalina.valves.RemoteAddrValve"
+				allow="127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1" />
+				
+				comment above lines by adding <!-- & --> ,before and after of above lines. Below that add below
+				command.				
+				
+				After
+				<!--
+				<Valve className="org.apache.catalina.valves.RemoteAddrValve"
+				allow="127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1" />
+				-->				
+				<Valve className="org.apache.catalina.valves.RemoteAddrValve"
+				allow=".*" />
+				
+				esc:wq
+				
+		If all above changes are made, execute the command 'tomcatdown' and then 'tomcatup'
+
+Step6:	Login to jenkins UI >> New Item >> enter item name >> select project type 'pipeline' >> Under 'Advance Project
+		Options' write the pipeline script(use pipeline Syntax for reference) >> save >> press 'Build Now'
+					
+			Script:		pipeline{
+						agent any
+						tools{
+							maven 'maven'
+						}
+						stages{
+							stage('checkout'){
+								steps{
+									git branch: 'main', url: 'https://github.com/nikhilnila/spring-petclinic.git'
+								}
+							}
+							stage('build'){
+								steps{
+									sh 'mvn clean install'
+								}
+							}
+							stage('playbook'){
+								steps{
+									ansiblePlaybook credentialsId: 'asbl', disableHostKeyChecking: true, installation: 'ansible-t', inventory: 'dev.inv', playbook: 'ansible.yml'
+								}
+							}
+						}
+					}
